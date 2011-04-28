@@ -7,15 +7,17 @@ $(function() {
   /* declare OpenLayers variables that need scope throughout this file */
   var map, hydrantLayer, hydrantIconStyle, selectControl;
   /* load OpenLayers script, then run new function initMap() */
-  if(!OpenLayers) {
+  try{
+    if(OpenLayers) {
+      initMap();
+	}
+  }
+  catch(e){
     var OpenLayersScript = document.createElement("script");
     OpenLayersScript.type = "text/javascript";
     OpenLayersScript.src = "http://openlayers.org/api/OpenLayers.js";
     OpenLayersScript.onload = function() { initMap() };
     document.body.appendChild(OpenLayersScript);
-  }
-  else {
-    initMap();
   }
   function initMap() {
     /* create an OpenLayers map on map_canvas which supports standard and Google Maps projections */
