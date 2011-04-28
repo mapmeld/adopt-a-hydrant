@@ -1,66 +1,123 @@
 $(function() {
-  var center = new google.maps.LatLng(42.358431, -71.059773);
-  var zoomLevel = 15;
-  var mapOptions = {
-    center: center,
-    mapTypeControl: false,
-    mapTypeId: google.maps.MapTypeId.ROADMAP,
-    panControl: false,
-    zoom: zoomLevel
-  };
-  var map = new google.maps.Map(document.getElementById("map_canvas"), mapOptions);
   var activeHydrantId;
   var activeMarker;
   var activeInfoWindow;
   var isWindowOpen = false;
   var hydrantIds = [];
-  function addMarker(hydrantId, point, color) {
-    var image = new google.maps.MarkerImage(color,
-      new google.maps.Size(27.0, 37.0),
-      new google.maps.Point(0, 0),
-      new google.maps.Point(13.0, 18.0)
-    );
-    var shadow = new google.maps.MarkerImage('/images/markers/shadow.png',
-      new google.maps.Size(46.0, 37.0),
-      new google.maps.Point(0, 0),
-      new google.maps.Point(13.0, 18.0)
-    );
-    var marker = new google.maps.Marker({
-      animation: google.maps.Animation.DROP,
-      icon: image,
-      map: map,
-      position: point,
-      shadow: shadow
+  /* declare OpenLayers variables that need scope throughout this file */
+  var map, hydrantLayer, hydrantIconStyle, selectControl;
+  /* load OpenLayers script, then run new function initMap() */
+  if(!OpenLayers) {
+    var OpenLayersScript = document.createElement("script");
+    OpenLayersScript.type = "text/javascript";
+    OpenLayersScript.src = "http://openlayers.org/api/OpenLayers.js";
+    OpenLayersScript.onload = function() { initMap() };
+    document.body.appendChild(OpenLayersScript);
+  }
+  else {
+    initMap();
+  }
+  function initMap() {
+    /* create an OpenLayers map on map_canvas which supports standard and Google Maps projections */
+    map = new OpenLayers.Map({
+      div: "map_canvas",
+      projection: new OpenLayers.Projection('EPSG:900913'),
+      'displayProjection': new OpenLayers.Projection('EPSG:4326')
     });
-    google.maps.event.addListener(marker, 'click', function() {
-      if(activeInfoWindow) {
-        activeInfoWindow.close();
+    /* add OpenStreetMap layer */
+    var osm = new OpenLayers.Layer.OSM();
+    map.addLayer(osm);
+    /* set center and zoom ( using OpenLayers's LonLat order ) */
+    var center = new OpenLayers.LonLat( -71.059773, 42.358431 ).transform(map.displayProjection, map.projection);
+    var zoomLevel = 15;
+    map.setCenter(center, zoomLevel);
+    /* create and add a layer for hydrant points */
+    var layerStyle = OpenLayers.Util.extend({}, OpenLayers.Feature.Vector.style['default']);
+    hydrantLayer = new OpenLayers.Layer.Vector("Hydrants", {style: layerStyle});
+    map.addLayer(hydrantLayer);
+    /* create standard hydrant icon style */
+    hydrantIconStyle = OpenLayers.Util.extend({}, layerStyle);
+    hydrantIconStyle.graphicWidth = 27;
+    hydrantIconStyle.graphicHeight = 37;
+    hydrantIconStyle.fillOpacity = 1;
+    hydrantIconStyle.graphicOpacity = 1;
+    hydrantIconStyle.backgroundGraphic = "/shadow.png";
+    hydrantIconStyle.backgroundXOffset = -8;
+    hydrantIconStyle.backgroundYOffset = -19;
+    hydrantIconStyle.graphicZIndex = 11;
+    hydrantIconStyle.backgroundGraphicZIndex = 10;
+    /* monitor click events on the hydrant layer */
+    selectControl = new OpenLayers.Control.SelectFeature( hydrantLayer );
+    map.addControl(selectControl);
+    selectControl.activate();
+    /* connect click events to functions onFeatureSelect and onFeatureUnselect */
+    hydrantLayer.events.on({
+      'featureselected': onFeatureSelect,
+      'featureunselected': onFeatureUnselect
+    });
+    /* add dragend / moveend event to the OpenLayers map */
+    map.events.register( "moveend", map, function() {
+      if(isWindowOpen == true) {
+        return;
       }
-      var infoWindow = new google.maps.InfoWindow({
-        maxWidth: 350
-      });
-      google.maps.event.addListener(infoWindow, 'closeclick', function() {
-        isWindowOpen = false;
-      });
-      activeInfoWindow = infoWindow;
-      activeHydrantId = hydrantId;
-      activeMarker = marker;
-      $.ajax({
-        type: 'GET',
-        url: '/hydrant',
-        data: {
-          'hydrant_id': hydrantId
-        },
-        success: function(data) {
-          // Prevent race condition, which could lead to multiple windows being open at the same time.
-          if(infoWindow == activeInfoWindow) {
-            infoWindow.setContent(data);
-            infoWindow.open(map, marker);
-            isWindowOpen = true;
-          }
-        }
-      });
+      var center = map.getCenter().transform(map.projection, map.displayProjection);
+      addMarkersAround(center.lat, center.lon);
     });
+  }
+  function onFeatureSelect(clickInfo) {
+    clickedFeature = clickInfo.feature;
+    hydrantId =  clickedFeature.attributes.hydrantId;
+    activeHydrantId = hydrantId;
+    activeMarker = clickedFeature;
+    $.ajax({
+      type: 'GET',
+      url: '/hydrant',
+      data: {
+        'hydrant_id': hydrantId
+      },
+      success: function(data) {
+        /* activeInfoWindow opening and closing code based on OpenLayers.org/dev/examples/ and Ushahidi.com */
+        activeInfoWindow = new OpenLayers.Popup.FramedCloud(
+          "featurePopup",
+          clickedFeature.geometry.getBounds().getCenterLonLat(),
+          new OpenLayers.Size(200,350),
+          data,
+          null,
+          true,
+          onPopupClose
+        );
+        clickedFeature.popup = activeInfoWindow;
+        activeInfoWindow.feature = clickedFeature;
+        map.addPopup(activeInfoWindow);
+        isWindowOpen = true;
+      }
+    });
+  }
+  function onFeatureUnselect(clickInfo) {
+    feature = clickInfo.feature;
+    if (feature.popup) {
+      activeInfoWindow.feature = null;
+      map.removePopup(feature.popup);
+      feature.popup.destroy();
+      feature.popup = null;
+      isWindowOpen = false;
+    }
+  }
+  function onPopupClose(closeInfo) {
+    selectControl.unselect(this.feature);
+    isWindowOpen = false;
+  }
+  function addMarker(hydrantId, point, color) {
+    var imageStyle = OpenLayers.Util.extend({}, hydrantIconStyle);
+    imageStyle.externalGraphic = color;
+    /* drop animation not directly supported in OpenLayers */
+    /*animation: google.maps.Animation.DROP,*/
+    var marker = new OpenLayers.Feature.Vector( point, null, imageStyle );
+    /* set up info before adding hydrant to the map */
+    marker.attributes = {
+      hydrantId: hydrantId
+    };
+    hydrantLayer.addFeatures( [ marker ] );
     hydrantIds.push(hydrantId);
   }
   function addMarkersAround(lat, lng) {
@@ -69,7 +126,7 @@ $(function() {
       url: '/hydrants.json',
       data: {
         'commit': $('#address_form input[type="submit"]').val(),
-        'utf8': '✓',
+        'utf8': '?',
         'authenticity_token': $('#address_form input[name="authenticity_token"]').val(),
         'lat': lat,
         'lng': lng
@@ -92,25 +149,17 @@ $(function() {
               return true;
             }
             setTimeout(function() {
-              point = new google.maps.LatLng(hydrant.lat, hydrant.lng);
-              color = '/images/markers/' + (hydrant.user_id ? 'green' : 'red') + '.png';
+              point = new OpenLayers.Geometry.Point(hydrant.lng, hydrant.lat).transform( map.displayProjection, map.projection);
+              color = '/' + (hydrant.user_id ? 'green' : 'red') + '.png';
               addMarker(hydrant.id, point, color);
             }, i * 100);
           });
-          center = new google.maps.LatLng(lat, lng);
-          map.setCenter(center);
-          map.setZoom(18);
+          //center = new OpenLayers.LonLat(lng , lat).transform(map.displayProjection, map.projection);
+          //map.setCenter(center, 18);
         }
       }
     });
   }
-  google.maps.event.addListener(map, 'dragend', function() {
-    if(isWindowOpen == true) {
-      return;
-    }
-    center = map.getCenter();
-    addMarkersAround(center.lat(), center.lng());
-  });
   $('#address_form').submit(function() {
     var submitButton = $("#address_form input[type='submit']");
     $(submitButton).attr("disabled", true);
@@ -128,7 +177,7 @@ $(function() {
         url: '/address.json',
         data: {
           'commit': submitButton.val(),
-          'utf8': '✓',
+          'utf8': '?',
           'authenticity_token': $('#address_form input[name="authenticity_token"]').val(),
           'city_state': $('#city_state').val(),
           'address': $('#address').val()
@@ -211,7 +260,7 @@ $(function() {
           url: '/users.json',
           data: {
             'commit': submitButton.val(),
-            'utf8': '✓',
+            'utf8': '?',
             'authenticity_token': $('#combo_form input[name="authenticity_token"]').val(),
             'user': {
               'email': $('#user_email').val(),
@@ -277,7 +326,7 @@ $(function() {
                   'hydrant_id': activeHydrantId
                 },
                 success: function(data) {
-                  activeInfoWindow.setContent(data);
+                  activeInfoWindow.setContentHTML(data);
                 }
               });
             }
@@ -302,7 +351,7 @@ $(function() {
           url: '/users/sign_in.json',
           data: {
             'commit': submitButton.val(),
-            'utf8': '✓',
+            'utf8': '?',
             'authenticity_token': $('#combo_form input[name="authenticity_token"]').val(),
             'user': {
               'email': $('#user_email').val(),
@@ -336,7 +385,7 @@ $(function() {
                   'hydrant_id': activeHydrantId
                 },
                 success: function(data) {
-                  activeInfoWindow.setContent(data);
+                  activeInfoWindow.setContentHTML(data);
                 }
               });
             }
@@ -353,7 +402,7 @@ $(function() {
           url: '/users/password.json',
           data: {
             'commit': submitButton.val(),
-            'utf8': '✓',
+            'utf8': '?',
             'authenticity_token': $('#combo_form input[name="authenticity_token"]').val(),
             'user': {
               'email': $('#user_email').val()
@@ -392,11 +441,11 @@ $(function() {
     $(submitButton).attr("disabled", true);
     $.ajax({
       type: 'POST',
-      url: '/hydrant',
+      url: '/hydrants.json',
       data: {
         'id': $('#hydrant_id').val(),
         'commit': submitButton.val(),
-        'utf8': '✓',
+        'utf8': '?',
         'authenticity_token': $('#adoption_form input[name="authenticity_token"]').val(),
         '_method': 'put',
         'hydrant': {
@@ -422,15 +471,11 @@ $(function() {
             'hydrant_id': activeHydrantId
           },
           success: function(data) {
-            activeInfoWindow.setContent(data);
-            activeInfoWindow.setContent(data);
-            image = new google.maps.MarkerImage('/images/markers/green.png',
-              new google.maps.Size(27.0, 37.0),
-              new google.maps.Point(0, 0),
-              new google.maps.Point(13.0, 18.0)
-            );
-            activeMarker.setIcon(image);
-            activeMarker.setAnimation(google.maps.Animation.BOUNCE);
+            activeInfoWindow.setContentHTML(data);
+            //activeInfoWindow.setContentHTML(data);
+            activeMarker.style.externalGraphic = '/green.png';
+            /* bounce animation not directly supported by OpenLayers */
+            /* activeMarker.setAnimation(google.maps.Animation.BOUNCE); */
           }
         });
       }
@@ -448,7 +493,7 @@ $(function() {
         data: {
           'id': $('#hydrant_id').val(),
           'commit': submitButton.val(),
-          'utf8': '✓',
+          'utf8': '?',
           'authenticity_token': $('#abandon_form input[name="authenticity_token"]').val(),
           '_method': 'put',
           'hydrant': {
@@ -474,14 +519,10 @@ $(function() {
               'hydrant_id': activeHydrantId
             },
             success: function(data) {
-              activeInfoWindow.setContent(data);
-              image = new google.maps.MarkerImage('/images/markers/red.png',
-                new google.maps.Size(27.0, 37.0),
-                new google.maps.Point(0, 0),
-                new google.maps.Point(13.0, 18.0)
-              );
-              activeMarker.setIcon(image);
-              activeMarker.setAnimation(null);
+              activeInfoWindow.setContentHTML(data);
+              activeMarker.style.externalGraphic = '/red.png';
+              /* animation not supported by OpenLayers */
+              /*activeMarker.setAnimation(null);*/
             }
           });
         }
@@ -500,7 +541,7 @@ $(function() {
         data: {
           'id': $('#hydrant_id').val(),
           'commit': submitButton.val(),
-          'utf8': '✓',
+          'utf8': '?',
           'authenticity_token': $('#steal_form input[name="authenticity_token"]').val(),
           '_method': 'put',
           'hydrant': {
@@ -526,14 +567,10 @@ $(function() {
               'hydrant_id': activeHydrantId
             },
             success: function(data) {
-              activeInfoWindow.setContent(data);
-              image = new google.maps.MarkerImage('/images/markers/red.png',
-                new google.maps.Size(27.0, 37.0),
-                new google.maps.Point(0, 0),
-                new google.maps.Point(13.0, 18.0)
-              );
-              activeMarker.setIcon(image);
-              activeMarker.setAnimation(null);
+              activeInfoWindow.setContentHTML(data);
+              activeMarker.style.externalGraphic = '/red.png';
+              /* animations not directly supported by OpenLayers */
+              /*activeMarker.setAnimation(null);*/
             }
           });
         }
@@ -549,7 +586,7 @@ $(function() {
       url: '/users/edit',
       data: {
         'commit': submitButton.val(),
-        'utf8': '✓',
+        'utf8': '?',
         'authenticity_token': $('#edit_profile_form input[name="authenticity_token"]').val()
       },
       beforeSend: function() {
@@ -563,7 +600,7 @@ $(function() {
         $(submitButton).attr("disabled", false);
       },
       success: function(data) {
-        activeInfoWindow.setContent(data);
+        activeInfoWindow.setContentHTML(data);
       }
     });
     return false;
@@ -615,7 +652,7 @@ $(function() {
           'id': $('#id').val(),
           'hydrant_id': activeHydrantId,
           'commit': submitButton.val(),
-          'utf8': '✓',
+          'utf8': '?',
           'authenticity_token': $('#edit_form input[name="authenticity_token"]').val(),
           '_method': 'put',
           'user': {
@@ -681,7 +718,7 @@ $(function() {
             }
             errors[0].focus();
           } else {
-            activeInfoWindow.setContent(data);
+            activeInfoWindow.setContentHTML(data);
           }
         }
       });
@@ -696,7 +733,7 @@ $(function() {
       url: '/users/sign_out.json',
       data: {
         'commit': submitButton.val(),
-        'utf8': '✓',
+        'utf8': '?',
         'authenticity_token': $('#sign_out_form input[name="authenticity_token"]').val()
       },
       beforeSend: function() {
@@ -717,7 +754,7 @@ $(function() {
             'hydrant_id': activeHydrantId
           },
           success: function(data) {
-            activeInfoWindow.setContent(data);
+            activeInfoWindow.setContentHTML(data);
           }
         });
       }
@@ -732,7 +769,7 @@ $(function() {
       url: '/users/sign_in',
       data: {
         'commit': submitButton.val(),
-        'utf8': '✓',
+        'utf8': '?',
         'authenticity_token': $('#sign_in_form input[name="authenticity_token"]').val(),
       },
       beforeSend: function() {
@@ -746,7 +783,7 @@ $(function() {
         $(submitButton).attr("disabled", false);
       },
       success: function(data) {
-        activeInfoWindow.setContent(data);
+        activeInfoWindow.setContentHTML(data);
       }
     });
     return false;
@@ -759,7 +796,7 @@ $(function() {
       url: '/hydrant',
       data: {
         'commit': submitButton.val(),
-        'utf8': '✓',
+        'utf8': '?',
         'authenticity_token': $('#back_form input[name="authenticity_token"]').val(),
         'hydrant_id': activeHydrantId
       },
@@ -774,7 +811,7 @@ $(function() {
         $(submitButton).attr("disabled", false);
       },
       success: function(data) {
-        activeInfoWindow.setContent(data);
+        activeInfoWindow.setContentHTML(data);
       }
     });
     return false;
